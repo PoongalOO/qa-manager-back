@@ -1,0 +1,147 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import request from 'supertest';
+import express from 'express';
+import { Sequelize } from 'sequelize';
+import updateRoleRoute from './updateRole';
+import { roles } from './authSettings.js';
+
+const adminRoleIndex = roles.findIndex((entry) => entry.uid === 'administrator');
+const userRoleIndex = roles.findIndex((entry) => entry.uid === 'user');
+const qaManagerRoleIndex = roles.findIndex((entry) => entry.uid === 'qa-manager');
+
+// mock of authentication middleware
+vi.mock('../../middleware/auth.js', () => ({
+  default: () => ({
+    verifySignedIn: vi.fn((req, res, next) => {
+      req.userId = 1; // Mock user ID
+      next();
+    }),
+    verifyAdmin: vi.fn((req, res, next) => {
+      next(); // Allow all as admin
+    }),
+  }),
+}));
+
+// mock defineUser
+const mockUser = {
+  findByPk: vi.fn(),
+  count: vi.fn(),
+  update: vi.fn(),
+};
+vi.mock('../../models/users.js', () => ({
+  default: () => mockUser,
+}));
+
+// test
+describe('updateUserRole', () => {
+  let app;
+  const sequelize = new Sequelize({
+    dialect: 'sqlite',
+    logging: false,
+  });
+
+  beforeEach(() => {
+    app = express();
+    app.use(express.json());
+
+    // Mount the update route
+    app.use('/users', updateRoleRoute(sequelize));
+  });
+
+  it('call update API without new role', async () => {
+    const response = await request(app).put('/users/2/role').send();
+
+    expect(response.status).toBe(400);
+    expect(response.text).toBe('newRole is required');
+  });
+
+  it('promote not existing user to admin will return 404', async () => {
+    mockUser.findByPk.mockResolvedValue(null); // No user found
+    const response = await request(app).put('/users/2/role').send({
+      newRole: 0,
+    });
+
+    expect(response.status).toBe(404);
+    expect(response.text).toBe('User not found');
+  });
+
+  it('promote existing user to admin will return 200', async () => {
+    const targetUser = { id: 2, role: userRoleIndex, update: vi.fn() }; // Normal user
+    mockUser.findByPk.mockResolvedValue(targetUser);
+
+    const response = await request(app).put('/users/2/role').send({
+      newRole: 0,
+    });
+
+    expect(response.status).toBe(200);
+    expect(targetUser.update).toHaveBeenCalledWith({ role: 0 });
+  });
+
+  it('should return 400 if trying to demote the only administrator to user', async () => {
+    const targetUser = { id: 1, role: adminRoleIndex, update: vi.fn() };
+    mockUser.findByPk.mockResolvedValue(targetUser);
+    mockUser.count.mockResolvedValue(1); // Only one admin
+
+    const response = await request(app).put('/users/1/role').send({ newRole: userRoleIndex });
+
+    expect(response.status).toBe(400);
+    expect(response.text).toBe('At least one administrator is required.');
+  });
+
+  it('should return 400 if trying to demote the only administrator to qa-manager', async () => {
+    const targetUser = { id: 1, role: adminRoleIndex, update: vi.fn() };
+    mockUser.findByPk.mockResolvedValue(targetUser);
+    mockUser.count.mockResolvedValue(1); // Only one admin
+
+    const response = await request(app).put('/users/1/role').send({ newRole: qaManagerRoleIndex });
+
+    expect(response.status).toBe(400);
+    expect(response.text).toBe('At least one administrator is required.');
+  });
+
+  it('should demote administrator to qa-manager when multiple admins exist', async () => {
+    const targetUser = { id: 1, role: adminRoleIndex, update: vi.fn() };
+    mockUser.findByPk.mockResolvedValue(targetUser);
+    mockUser.count.mockResolvedValue(2); // Two admins
+
+    const response = await request(app).put('/users/1/role').send({ newRole: qaManagerRoleIndex });
+
+    expect(response.status).toBe(200);
+    expect(targetUser.update).toHaveBeenCalledWith({ role: qaManagerRoleIndex });
+  });
+
+  it('should assign qa-manager role to a regular user', async () => {
+    const targetUser = { id: 2, role: userRoleIndex, update: vi.fn() };
+    mockUser.findByPk.mockResolvedValue(targetUser);
+
+    const response = await request(app).put('/users/2/role').send({ newRole: qaManagerRoleIndex });
+
+    expect(response.status).toBe(200);
+    expect(targetUser.update).toHaveBeenCalledWith({ role: qaManagerRoleIndex });
+  });
+
+  it('should promote qa-manager to administrator', async () => {
+    const targetUser = { id: 2, role: qaManagerRoleIndex, update: vi.fn() };
+    mockUser.findByPk.mockResolvedValue(targetUser);
+
+    const response = await request(app).put('/users/2/role').send({ newRole: adminRoleIndex });
+
+    expect(response.status).toBe(200);
+    expect(targetUser.update).toHaveBeenCalledWith({ role: adminRoleIndex });
+  });
+
+  it('should handle internal server errors', async () => {
+    // Suppress error logging to console
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    // Simulate DB error
+    mockUser.findByPk.mockRejectedValue(new Error('Database error'));
+
+    const response = await request(app).put('/users/1/role').send({
+      newRole: 0,
+    });
+
+    expect(response.status).toBe(500);
+    expect(response.text).toBe('Internal Server Error');
+  });
+});

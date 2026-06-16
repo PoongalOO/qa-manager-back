@@ -1,0 +1,14 @@
+node_modules/
+.env
+public/uploads/*
+!public/uploads/dummy.txt
+
+# Base de données locale SQLite
+# Ne jamais versionner une base réelle : elle peut contenir des comptes,
+# mots de passe hashés, jetons, cas de test, commentaires ou pièces jointes.
+database/*.sqlite
+database/*.sqlite3
+database/*.db
+*.sqlite
+*.sqlite3
+*.db
